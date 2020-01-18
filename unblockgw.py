@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import os
-import re
-import sys
-import time
-import json
-import socket
-import shutil
-import logging
 import argparse
-import subprocess
+import json
+import logging
 import logging.handlers
+import re
+import socket
+import subprocess
+import sys
 from urllib.parse import urlsplit
 
 import requests
@@ -20,7 +17,6 @@ try:
     from config import *
 except ImportError:
     from default_config import *
-
 
 elogger = logging.getLogger('stderr')
 ologger = logging.getLogger('stdout')
@@ -33,6 +29,7 @@ def main():
     elogger.debug(" ".join(sys.argv))
     Gateway.execute(sys.argv[1:])
 
+
 class Gateway(object):
 
     @classmethod
@@ -41,8 +38,6 @@ class Gateway(object):
 
 Unblock CHN 网关命令：
   status                  查看代理状态
-  on                      开启代理
-  off                     关闭代理
   check <URL/IP/域名>     检查 <URL/IP/域名> 是否走代理
   renew                   更新规则
   setup [--no-ss]         一键配置网关 [--no-ss: 跳过配置 ss-redir]
@@ -50,7 +45,7 @@ Unblock CHN 网关命令：
 """
         parser = argparse.ArgumentParser(usage=cls.execute.__doc__)
         parser.add_argument(
-            'cmd', choices=['status', 'on', 'off', 'check', 'renew', 'setup', 'create'])
+            'cmd', choices=['status', 'check', 'renew', 'setup', 'create'])
         args = parser.parse_args(raw_args[0:1])
 
         if args.cmd == 'create':
@@ -60,11 +55,7 @@ Unblock CHN 网关命令：
         # 检查 iptables 和 ipset 命令是否存在
         cls.check_ipset_iptables()
 
-        if args.cmd == 'on':
-            cls.cmd_on()
-        elif args.cmd == 'off':
-            cls.cmd_off()
-        elif args.cmd == 'status':
+        if args.cmd == 'status':
             cls.cmd_status()
         elif args.cmd == 'check':
             cls.cmd_check(raw_args[1:])
@@ -82,35 +73,6 @@ Unblock CHN 网关命令：
             ologger.info("已开启")
         else:
             ologger.info("已关闭")
-
-    @classmethod
-    def cmd_on(cls):
-        """开启 Unblock CHN 代理"""
-        cls.check_setup()
-        ss_redir_running = cls.check_ss_redir()
-        if not ss_redir_running:
-            success = cls.start_ss_redir()
-            if not success:
-                ologger.error("✘ 无法启动 ss-redir")
-                sys.exit(1)
-        iptables_chn_exists = cls.check_iptables_chn()
-        if not iptables_chn_exists:
-            cls.add_iptables_chn()
-        if ss_redir_running and iptables_chn_exists:
-            ologger.info("已经开启")
-        else:
-            ologger.info("开启成功")
-
-    @classmethod
-    def cmd_off(cls):
-        """关闭 Unblock CHN 代理"""
-        cls.check_setup()
-        iptables_chn_exists = cls.check_iptables_chn()
-        if iptables_chn_exists:
-            cls.delete_iptables_chn()
-            ologger.info("关闭成功")
-        else:
-            ologger.info("已经关闭")
 
     @classmethod
     def cmd_check(cls, raw_args):
@@ -164,19 +126,10 @@ Unblock CHN 网关命令：
         """python3 unblockgw.py router setup [-h] [--no-ss]
         Unblock CHN 一键配置网关
         """
-        parser = argparse.ArgumentParser(usage=cls.cmd_setup.__doc__)
-        parser.add_argument('--no-ss', action='store_true', help="跳过配置 ss-redir")
-        args = parser.parse_args(raw_args)
-
-        # 不跳过配置 ss-redir
-        if not args.no_ss:
-            # 配置 ss-redir
-            cls.setup_ss_redir()
 
         # 生成网关配置文件
         unblock_youku = UnblockYouku()
         cls.create_conf_files(unblock_youku.black_domains)
-
 
         # 清空 ipset 的 chn 表
         cmd = "ipset flush"
@@ -190,7 +143,6 @@ Unblock CHN 网关命令：
         cls.add_renew_cron_job()
 
         ologger.info("配置成功")
-
 
     @classmethod
     def cmd_create(cls):
@@ -266,38 +218,6 @@ Unblock CHN 网关命令：
         return True
 
     @classmethod
-    def setup_ss_redir(cls):
-        """配置 ss-redir"""
-
-        # 生成 ss-redir 配置文件
-        conf = SS_REDIR_CONF
-        if conf['server'] is None:
-            conf['server'] = input("Shadowsocks 服务器地址：").strip()
-        if conf['server_port'] is None:
-            conf['server_port'] = int(input("Shadowsocks 服务器端口：").strip())
-        if conf['password'] is None:
-            conf['password'] = input("Shadowsocks 密码：").strip()
-        if conf['method'] is None:
-            conf['method'] = input("Shadowsocks 加密方法：").strip()
-        with open(SS_REDIR_CONF_PATH, 'w', encoding='utf-8') as f:
-            json.dump(conf, f, indent=4)
-        elogger.info("✔ 保存 ss-redir 配置文件：{}".format(SS_REDIR_CONF_PATH))
-
-        # 启动 ss-redir
-        success = cls.start_ss_redir()
-        if not success:
-            cmd = "{} -c {}".format(SS_REDIR_PATH, SS_REDIR_CONF_PATH)
-            elogger.error("✘ 无法启动 ss-redir，请手动运行以下命令查看错误信息：\n{}".format(cmd))
-            sys.exit(1)
-
-        # 保存 ss-redir 启动命令到网关的 services-start 启动脚本中
-        cmd = "{} -c {} -f {}"
-        cmd = cmd.format(SS_REDIR_PATH, SS_REDIR_CONF_PATH, SS_REDIR_PID_PATH)
-        comment = "# ss-redir"
-        cls.append_to_script(SERVICES_START_SCRIPT_PATH, comment, cmd)
-        elogger.info("✔ 保存 ss-redir 启动命令到网关的 services-start 启动脚本中：{}".format(SERVICES_START_SCRIPT_PATH))
-
-    @classmethod
     def setup_ipset_iptables(cls):
         """配置 ipset 和 iptables"""
         # 载入 ipset 规则
@@ -333,7 +253,7 @@ Unblock CHN 网关命令：
         renew_cmd = "0 {} * * * {} {} renew\r\n"
         unblockgw_path = os.path.realpath(__file__)
         renew_cmd = renew_cmd.format(RENEW_TIME, PYTHON3_PATH, unblockgw_path)
-        
+
         # 写入定时任务到文件中
         ipset_tpl_path = os.path.join(DIR_PATH, "configs/renew_task")
         with open(ipset_tpl_path, 'w', encoding='utf-8') as f:
@@ -366,34 +286,6 @@ Unblock CHN 网关命令：
         comment = "# unblockgw_renew cron job"
         cls.remove_from_script(SERVICES_START_SCRIPT_PATH, comment)
         elogger.info("✔ 从启动脚本里移除定时命令：{}".format(SERVICES_START_SCRIPT_PATH))
-
-    @classmethod
-    def start_ss_redir(cls):
-        """启动 ss-redir"""
-        cmd = "{} -c {} -f {}"
-        cmd = cmd.format(SS_REDIR_PATH, SS_REDIR_CONF_PATH, SS_REDIR_PID_PATH)
-        subprocess.call(cmd, shell=True)
-        time.sleep(1)
-        is_running = cls.check_ss_redir()
-        if is_running:
-            elogger.info("✔ 启动 ss-redir：{}".format(cmd))
-        return is_running
-
-    @classmethod
-    def stop_ss_redir(cls):
-        """停止 ss-redir"""
-        with open(SS_REDIR_PID_PATH, 'r', encoding='utf-8') as f:
-            pid = f.read()
-        cmd = "kill {}".format(pid)
-        subprocess.check_call(cmd, shell=True)
-        elogger.info("✔ 停止 ss-redir：{}".format(cmd))
-
-    @classmethod
-    def check_ss_redir(cls):
-        """检查 ss-redir 是否运行中"""
-        with open(SS_REDIR_PID_PATH, 'r', encoding='utf-8') as f:
-            pid = f.read()
-        return os.path.exists("/proc/{}".format(pid))
 
     @classmethod
     def check_setup(cls):
@@ -476,6 +368,7 @@ Unblock CHN 网关命令：
             return True
         else:
             return False
+
 
 class UnblockYouku(object):
 
